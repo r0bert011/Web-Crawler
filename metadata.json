@@ -1,0 +1,5 @@
+{
+  "name": "Web Crawler AI",
+  "description": "An AI-powered web crawler that summarizes content and extracts links from any URL.",
+  "requestFramePermissions": []
+}

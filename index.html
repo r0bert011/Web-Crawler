@@ -1,0 +1,74 @@
+
+<!DOCTYPE html>
+<html lang="de">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MightyTools Content Extractor</title>
+    <link rel="stylesheet" href="index.css">
+    <script type="importmap">
+      {
+        "imports": {
+          "@google/genai": "https://esm.sh/@google/genai@^0.12.0"
+        }
+      }
+    </script>
+    <script type="module" src="index.tsx"></script>
+</head>
+<body>
+    <header>
+        <h1>MightyTools Content Extractor</h1>
+    </header>
+    <main>
+        <section id="crawler-input-section">
+            <form id="crawl-form">
+                <input type="url" id="url-input" value="https://help.gohighlevel.com/" required aria-label="URL zum Crawlen">
+                <input type="number" id="max-pages-input" value="100" min="1" aria-label="Maximale Seitenanzahl">
+                <button type="submit" id="crawl-button" aria-label="Crawl starten">
+                    <span class="button-text">Crawl starten</span>
+                    <div class="loader" hidden></div>
+                </button>
+            </form>
+            <p id="error-message" class="error-message" role="alert" aria-live="assertive"></p>
+        </section>
+
+        <section id="crawl-status-section" hidden aria-labelledby="status-heading">
+            <h2 id="status-heading">Crawl-Status</h2>
+            <p id="crawl-status-message"></p>
+        </section>
+
+        <section id="results-section" hidden aria-labelledby="results-heading">
+            <h2 id="results-heading">Letztes Ergebnis</h2>
+            <div class="result-card">
+                <h3>Gecrawlte URL</h3>
+                <p id="crawled-url"></p>
+                <h3>Inhalts-Zusammenfassung</h3>
+                <p id="content-summary"></p>
+                <h3>Extrahierte Links</h3>
+                <ul id="extracted-links"></ul>
+            </div>
+        </section>
+
+        <section id="history-section" aria-labelledby="history-heading">
+            <h2 id="history-heading">Crawl-Verlauf</h2>
+            <div id="history-container">
+                <p id="no-history-message">Noch kein Crawl-Verlauf vorhanden.</p>
+                <ul id="history-list"></ul>
+            </div>
+        </section>
+    </main>
+    <footer>
+        <p>Unterstützt von Gemini</p>
+    </footer>
+
+    <div id="resume-modal" class="modal" hidden>
+        <div class="modal-content">
+            <p>Eine unvollständige Crawl-Sitzung für diese URL wurde gefunden. Möchten Sie fortfahren?</p>
+            <div class="modal-actions">
+                <button id="resume-crawl-btn" class="modal-btn">Fortsetzen</button>
+                <button id="restart-crawl-btn" class="modal-btn delete">Neu starten</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
