@@ -32,6 +32,36 @@
             <p id="error-message" class="error-message" role="alert" aria-live="assertive"></p>
         </section>
 
+        <section id="sitemap-section" aria-labelledby="sitemap-heading">
+            <h2 id="sitemap-heading">Sitemap-gestütztes Crawlen</h2>
+            <div class="sitemap-controls">
+                <p id="sitemap-info">Laden Sie die Sitemap, um neue oder geänderte URLs zu finden und einen Crawl zu starten.</p>
+                <button type="button" id="load-sitemap-btn" aria-label="Sitemap laden und vergleichen">
+                    <span class="button-text">Sitemap laden & vergleichen</span>
+                </button>
+            </div>
+            <div id="sitemap-results" hidden>
+                <p id="sitemap-summary"></p>
+                <div id="sitemap-crawl-controls">
+                    <div class="checkbox-wrapper">
+                        <input type="checkbox" id="prioritize-crawl-checkbox" checked>
+                        <label for="prioritize-crawl-checkbox">Geänderte/Neue URLs zuerst crawlen</label>
+                    </div>
+                    <button type="button" id="start-sitemap-crawl-btn" aria-label="Sitemap-Crawl starten" disabled>Sitemap-Crawl starten</button>
+                </div>
+                <div class="url-lists">
+                    <div class="url-list-container">
+                        <h3>Neue URLs</h3>
+                        <ul id="new-urls-list"></ul>
+                    </div>
+                    <div class="url-list-container">
+                        <h3>Aktualisierte URLs</h3>
+                        <ul id="updated-urls-list"></ul>
+                    </div>
+                </div>
+            </div>
+        </section>
+
         <section id="crawl-status-section" hidden aria-labelledby="status-heading">
             <h2 id="status-heading">Crawl-Status</h2>
             <p id="crawl-status-message"></p>
@@ -42,8 +72,10 @@
             <div class="result-card">
                 <h3>Gecrawlte URL</h3>
                 <p id="crawled-url"></p>
-                <h3>Inhalts-Zusammenfassung</h3>
-                <p id="content-summary"></p>
+                <h3>Extrahierte Bilder</h3>
+                <div id="extracted-images"></div>
+                <h3>Vollständiger Inhalt</h3>
+                <pre id="content-full"></pre>
                 <h3>Extrahierte Links</h3>
                 <ul id="extracted-links"></ul>
             </div>

@@ -1,3 +1,4 @@
+
 /**
  * @license
  * SPDX-License-Identifier: Apache-2.0
@@ -6,9 +7,12 @@ import { GoogleGenAI, Type } from "@google/genai";
 
 // --- CONSTANTS ---
 const BATCH_SIZE = 10;
-const BATCH_PAUSE_MS = 15 * 60 * 1000; // 15 minutes
+const BATCH_PAUSE_MS = 3 * 60 * 1000; // 3 minutes
 const REQUEST_DELAY_MS = 2000; // 2 seconds
 const SESSION_KEY_PREFIX = 'crawlSession_';
+const SITEMAP_URL = 'https://help.gohighlevel.com/support/sitemap.xml';
+const PREVIOUS_SITEMAP_DATA_KEY = 'previousSitemapData';
+
 
 // --- TYPES ---
 interface CrawledLink {
@@ -16,10 +20,16 @@ interface CrawledLink {
     url: string;
 }
 
+interface CrawledImage {
+    src: string;
+    alt: string;
+}
+
 interface CrawlResult {
     id: number;
     url: string;
-    summary: string;
+    fullContent: string;
+    images: CrawledImage[];
     links: CrawledLink[];
     crawledAt: string;
 }
@@ -33,11 +43,20 @@ interface CrawlSession {
     pagesCrawled: number;
 }
 
+interface SitemapEntry {
+    url: string;
+    lastmod: string;
+}
+
 // --- STATE ---
 let history: CrawlResult[] = [];
 let isLoading = false;
 let currentSession: CrawlSession | null = null;
 let countdownInterval: ReturnType<typeof setInterval> | null = null;
+let sitemapNewUrls: string[] = [];
+let sitemapUpdatedUrls: string[] = [];
+let allSitemapUrls: string[] = [];
+
 
 // --- DOM ELEMENTS ---
 const crawlForm = document.getElementById('crawl-form') as HTMLFormElement;
@@ -48,12 +67,23 @@ const crawlButtonText = crawlButton.querySelector('.button-text') as HTMLSpanEle
 const loader = crawlButton.querySelector('.loader') as HTMLDivElement;
 const errorMessage = document.getElementById('error-message') as HTMLParagraphElement;
 
+const sitemapInfo = document.getElementById('sitemap-info') as HTMLParagraphElement;
+const loadSitemapBtn = document.getElementById('load-sitemap-btn') as HTMLButtonElement;
+const sitemapResults = document.getElementById('sitemap-results') as HTMLDivElement;
+const sitemapSummary = document.getElementById('sitemap-summary') as HTMLParagraphElement;
+const newUrlsList = document.getElementById('new-urls-list') as HTMLUListElement;
+const updatedUrlsList = document.getElementById('updated-urls-list') as HTMLUListElement;
+const prioritizeCrawlCheckbox = document.getElementById('prioritize-crawl-checkbox') as HTMLInputElement;
+const startSitemapCrawlBtn = document.getElementById('start-sitemap-crawl-btn') as HTMLButtonElement;
+
+
 const statusSection = document.getElementById('crawl-status-section') as HTMLElement;
 const statusMessage = document.getElementById('crawl-status-message') as HTMLParagraphElement;
 
 const resultsSection = document.getElementById('results-section') as HTMLElement;
 const crawledUrlEl = document.getElementById('crawled-url') as HTMLParagraphElement;
-const contentSummaryEl = document.getElementById('content-summary') as HTMLParagraphElement;
+const contentFullEl = document.getElementById('content-full') as HTMLPreElement;
+const extractedImagesEl = document.getElementById('extracted-images') as HTMLDivElement;
 const extractedLinksEl = document.getElementById('extracted-links') as HTMLUListElement;
 
 const historySection = document.getElementById('history-section') as HTMLElement;
@@ -72,7 +102,19 @@ const model = "gemini-2.5-flash";
 const CRAWL_SCHEMA = {
     type: Type.OBJECT,
     properties: {
-        summary: { type: Type.STRING, description: "Eine detaillierte, aber prägnante Zusammenfassung des Hauptinhalts der Webseite." },
+        fullContent: { type: Type.STRING, description: "Der gesamte Haupttext des Artikels auf der Webseite, ohne Navigationsleisten, Fußzeilen oder Werbung." },
+        images: {
+            type: Type.ARRAY,
+            description: "Ein Array der ersten 5 relevanten Bilder aus dem Artikel.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    src: { type: Type.STRING, description: "Die absolute URL (src) des Bildes." },
+                    alt: { type: Type.STRING, description: "Der Alt-Text des Bildes." },
+                },
+                required: ["src", "alt"],
+            }
+        },
         links: {
             type: Type.ARRAY,
             description: "Ein Array der 5 wichtigsten oder relevantesten Hyperlinks, die auf der Seite gefunden wurden.",
@@ -86,7 +128,26 @@ const CRAWL_SCHEMA = {
             },
         },
     },
-    required: ["summary", "links"],
+    required: ["fullContent", "images", "links"],
+};
+
+const SITEMAP_SCHEMA = {
+    type: Type.OBJECT,
+    properties: {
+        entries: {
+            type: Type.ARRAY,
+            description: "Eine Liste aller URL-Einträge aus der Sitemap.",
+            items: {
+                type: Type.OBJECT,
+                properties: {
+                    url: { type: Type.STRING, description: "Die URL aus dem <loc>-Tag." },
+                    lastmod: { type: Type.STRING, description: "Das Datum der letzten Änderung aus dem <lastmod>-Tag im ISO 8601-Format." }
+                },
+                required: ["url", "lastmod"],
+            }
+        }
+    },
+    required: ["entries"],
 };
 
 // --- HELPER FUNCTIONS ---
@@ -117,12 +178,20 @@ function clearSession(url: string) {
 function setLoading(loading: boolean, message?: string) {
     isLoading = loading;
     crawlButton.disabled = loading;
+    loadSitemapBtn.disabled = loading;
+    const hasUrlsToCrawl = sitemapNewUrls.length > 0 || sitemapUpdatedUrls.length > 0;
+    startSitemapCrawlBtn.disabled = loading || !hasUrlsToCrawl;
     urlInput.disabled = loading;
     maxPagesInput.disabled = loading;
     loader.hidden = !loading;
-    crawlButtonText.textContent = message || (loading ? 'Crawling...' : 'Crawl starten');
+    crawlButtonText.textContent = message || (loading ? 'Crawle...' : 'Crawl starten');
 
     if (loading) errorMessage.textContent = '';
+    
+    if (!loading) {
+        const loadSitemapBtnText = loadSitemapBtn.querySelector('.button-text');
+        if (loadSitemapBtnText) loadSitemapBtnText.textContent = 'Sitemap laden & vergleichen';
+    }
 }
 
 function updateStatus(message: string) {
@@ -155,7 +224,15 @@ function renderResult(result: CrawlResult | null) {
     }
     resultsSection.hidden = false;
     crawledUrlEl.textContent = result.url;
-    contentSummaryEl.textContent = result.summary;
+    contentFullEl.textContent = result.fullContent;
+
+    extractedImagesEl.innerHTML = result.images.map(img =>
+        `<figure>
+            <img src="${img.src}" alt="${img.alt}" loading="lazy">
+            <figcaption>${img.alt}</figcaption>
+         </figure>`
+    ).join('');
+
     extractedLinksEl.innerHTML = result.links.map(link =>
         `<li><a href="${link.url}" target="_blank" rel="noopener noreferrer">${link.text}</a></li>`
     ).join('');
@@ -195,6 +272,139 @@ function loadHistory() {
     renderHistory();
 }
 
+// --- SITEMAP LOGIC ---
+
+async function fetchAndParseSitemap(): Promise<SitemapEntry[]> {
+    try {
+        const response = await ai.models.generateContent({
+            model,
+            contents: `Lade die Sitemap von ${SITEMAP_URL}, parse sie und extrahiere für jeden URL-Eintrag die URL aus dem <loc>-Tag und das Datum der letzten Änderung aus dem <lastmod>-Tag. Gib das Ergebnis als JSON zurück.`,
+            config: {
+                responseMimeType: "application/json",
+                responseSchema: SITEMAP_SCHEMA,
+                systemInstruction: "Du bist ein Web-Utility-Assistent. Deine Aufgabe ist es, Sitemaps abzurufen und zu parsen. Gib nur das angeforderte JSON zurück."
+            }
+        });
+
+        const result = JSON.parse(response.text);
+        return result.entries || [];
+    } catch (error) {
+        console.error("Fehler beim Abrufen und Parsen der Sitemap:", error);
+        throw new Error("Konnte die Sitemap nicht von der AI verarbeiten lassen.");
+    }
+}
+
+function compareSitemaps(newEntries: SitemapEntry[], oldEntries: SitemapEntry[]): { newUrls: string[], updatedUrls: string[] } {
+    const oldEntriesMap = new Map(oldEntries.map(e => [e.url, e.lastmod]));
+    const newUrls: string[] = [];
+    const updatedUrls: string[] = [];
+
+    for (const newEntry of newEntries) {
+        if (!oldEntriesMap.has(newEntry.url)) {
+            newUrls.push(newEntry.url);
+        } else if (oldEntriesMap.get(newEntry.url) !== newEntry.lastmod) {
+            updatedUrls.push(newEntry.url);
+        }
+    }
+    return { newUrls, updatedUrls };
+}
+
+function renderSitemapResults() {
+    sitemapResults.hidden = false;
+    
+    sitemapSummary.textContent = `${sitemapNewUrls.length} neue URL(s) und ${sitemapUpdatedUrls.length} aktualisierte URL(s) gefunden.`;
+
+    const renderList = (listEl: HTMLElement, urls: string[]) => {
+        if (urls.length === 0) {
+            listEl.innerHTML = '<li>Keine</li>';
+            return;
+        }
+        listEl.innerHTML = urls.map(url => `<li title="${url}">${url}</li>`).join('');
+    };
+
+    renderList(newUrlsList, sitemapNewUrls);
+    renderList(updatedUrlsList, sitemapUpdatedUrls);
+
+    const hasChanges = sitemapNewUrls.length > 0 || sitemapUpdatedUrls.length > 0;
+    startSitemapCrawlBtn.disabled = !hasChanges || isLoading;
+}
+
+async function handleLoadSitemap() {
+    if (isLoading) {
+        alert('Ein Prozess läuft bereits. Bitte warten Sie, bis er abgeschlossen ist.');
+        return;
+    }
+    setLoading(true);
+    const btnText = loadSitemapBtn.querySelector('.button-text') as HTMLSpanElement;
+    btnText.textContent = 'Lade...';
+    sitemapInfo.textContent = 'Verarbeite Sitemap...';
+    errorMessage.textContent = '';
+
+
+    try {
+        const newEntries = await fetchAndParseSitemap();
+        const oldEntries: SitemapEntry[] = JSON.parse(localStorage.getItem(PREVIOUS_SITEMAP_DATA_KEY) || '[]');
+        
+        const { newUrls, updatedUrls } = compareSitemaps(newEntries, oldEntries);
+
+        sitemapNewUrls = newUrls;
+        sitemapUpdatedUrls = updatedUrls;
+        allSitemapUrls = newEntries.map(e => e.url);
+
+        localStorage.setItem(PREVIOUS_SITEMAP_DATA_KEY, JSON.stringify(newEntries));
+        
+        renderSitemapResults();
+
+        sitemapInfo.textContent = `Sitemap zuletzt am ${new Date().toLocaleString('de-DE')} geprüft.`;
+
+    } catch (error: any) {
+        console.error("Sitemap-Prüfung fehlgeschlagen:", error);
+        sitemapInfo.textContent = 'Fehler bei der Sitemap-Prüfung.';
+        errorMessage.textContent = error.message || 'Ein unbekannter Fehler ist aufgetreten.';
+        sitemapResults.hidden = true;
+    } finally {
+        setLoading(false);
+    }
+}
+
+function handleStartSitemapCrawl() {
+    const urlsToPrioritize = [...sitemapNewUrls, ...sitemapUpdatedUrls];
+    const crawledUrls = new Set(history.map(item => item.url));
+    const neverCrawledUrls = allSitemapUrls.filter(url => 
+        !crawledUrls.has(url) && !urlsToPrioritize.includes(url)
+    );
+
+    const shouldPrioritize = prioritizeCrawlCheckbox.checked;
+
+    const queue = shouldPrioritize 
+        ? [...urlsToPrioritize, ...neverCrawledUrls]
+        : [...neverCrawledUrls, ...urlsToPrioritize];
+    
+    if (queue.length === 0) {
+        updateStatus('Keine neuen URLs zum Crawlen gefunden.');
+        return;
+    }
+
+    startBatchCrawl(queue);
+}
+
+function startBatchCrawl(urls: string[]) {
+    const sessionKeyForBatch = getSessionKey(SITEMAP_URL);
+    clearSession(sessionKeyForBatch); 
+
+    currentSession = {
+        startUrl: SITEMAP_URL, // Use a generic identifier for batch crawls
+        maxPages: urls.length,
+        queue: urls,
+        visited: [],
+        batchCounter: 0,
+        pagesCrawled: 0,
+    };
+    saveSession(currentSession);
+    updateStatus(`${urls.length} URL(s) zur Warteschlange hinzugefügt. Starte Crawl...`);
+    processQueue();
+}
+
 // --- CORE CRAWLING LOGIC ---
 
 function saveResultAsJson(result: CrawlResult) {
@@ -215,14 +425,15 @@ async function processQueue() {
     if (!currentSession) return;
 
     setLoading(true);
-    const startHostname = new URL(currentSession.startUrl).hostname;
+    const isSitemapCrawl = currentSession.startUrl === SITEMAP_URL;
+    const startHostname = isSitemapCrawl ? null : new URL(currentSession.startUrl).hostname;
 
     while (currentSession.queue.length > 0 && currentSession.pagesCrawled < currentSession.maxPages) {
         if (currentSession.batchCounter >= BATCH_SIZE) {
             currentSession.batchCounter = 0;
             saveSession(currentSession);
             startCountdown(BATCH_PAUSE_MS);
-            return; // Pause execution, countdown will resume it
+            return; 
         }
 
         const currentUrl = currentSession.queue.shift()!;
@@ -235,13 +446,21 @@ async function processQueue() {
             
             const response = await ai.models.generateContent({
                 model,
-                contents: `Analysiere die URL ${currentUrl} und gib eine JSON-Zusammenfassung und die 5 wichtigsten Links zurück.`,
-                config: { responseMimeType: "application/json", responseSchema: CRAWL_SCHEMA },
+                contents: `Analysiere die URL ${currentUrl}. Extrahiere den GESAMTEN Haupttext des Artikels (ohne Menüs, Footer oder Werbung). Extrahiere auch die URLs und Alt-Texte der ersten 5 relevanten Bilder im Artikel. Gib außerdem die 5 wichtigsten Links zurück. Gib das Ergebnis als JSON zurück.`,
+                config: {
+                    responseMimeType: "application/json",
+                    responseSchema: CRAWL_SCHEMA,
+                    systemInstruction: "Du bist ein hilfreicher Assistent. Deine Aufgabe ist es, Webseiteninhalte zu analysieren. Alle deine Antworten und Zusammenfassungen müssen ausschließlich auf Deutsch sein, unabhängig von der Sprache der Quell-URL."
+                },
             });
             const resultData = JSON.parse(response.text);
 
             const replacementRegex = /gohighlevel|highlevel/gi;
-            const processedSummary = resultData.summary.replace(replacementRegex, 'mightytools');
+            const processedContent = resultData.fullContent.replace(replacementRegex, 'mightytools');
+            const processedImages: CrawledImage[] = (resultData.images || []).map((img: CrawledImage) => ({
+                src: img.src,
+                alt: (img.alt || '').replace(replacementRegex, 'mightytools'),
+            }));
             const processedLinks: CrawledLink[] = resultData.links.map((link: CrawledLink) => ({
                 text: link.text.replace(replacementRegex, 'mightytools'),
                 url: link.url,
@@ -250,7 +469,8 @@ async function processQueue() {
             const newResult: CrawlResult = {
                 id: Date.now(),
                 url: currentUrl,
-                summary: processedSummary,
+                fullContent: processedContent,
+                images: processedImages,
                 links: processedLinks,
                 crawledAt: new Date().toISOString(),
             };
@@ -265,14 +485,16 @@ async function processQueue() {
             currentSession.pagesCrawled++;
             currentSession.batchCounter++;
 
-            processedLinks.forEach(link => {
-                try {
-                    const absoluteUrl = new URL(link.url, currentUrl).href;
-                    if (new URL(absoluteUrl).hostname === startHostname && !currentSession.visited.includes(absoluteUrl) && !currentSession.queue.includes(absoluteUrl)) {
-                        currentSession.queue.push(absoluteUrl);
-                    }
-                } catch (e) { /* ignore invalid URLs */ }
-            });
+            if (startHostname) {
+                 processedLinks.forEach(link => {
+                    try {
+                        const absoluteUrl = new URL(link.url, currentUrl).href;
+                        if (new URL(absoluteUrl).hostname === startHostname && !currentSession.visited.includes(absoluteUrl) && !currentSession.queue.includes(absoluteUrl)) {
+                            currentSession.queue.push(absoluteUrl);
+                        }
+                    } catch (e) { /* ignore invalid URLs */ }
+                });
+            }
 
             saveSession(currentSession);
             
@@ -285,15 +507,17 @@ async function processQueue() {
                 ? 'API-Ratenlimit erreicht. Der Prozess wird pausiert. Bitte versuchen Sie es später erneut.' 
                 : 'Das Crawlen der URL ist fehlgeschlagen. Seite übersprungen.';
             errorMessage.textContent = errorMessageText;
-            currentSession.visited.push(currentUrl); // Mark as visited to avoid retrying
+            currentSession.visited.push(currentUrl);
             saveSession(currentSession);
-            await sleep(5000); // Wait longer on error
+            await sleep(5000); 
         }
     }
 
-    // Crawl finished
-    updateStatus(`Crawl abgeschlossen. ${currentSession.pagesCrawled} Seiten verarbeitet.`);
-    clearSession(currentSession.startUrl);
+    if(currentSession) {
+        updateStatus(`Crawl abgeschlossen. ${currentSession.pagesCrawled} Seiten verarbeitet.`);
+        clearSession(currentSession.startUrl);
+        currentSession = null;
+    }
     setLoading(false);
 }
 
@@ -311,6 +535,9 @@ function startCrawl(url: string, maxPages: number, fromScratch = false) {
             pagesCrawled: 0,
         };
         saveSession(currentSession);
+    } else {
+        currentSession.maxPages = maxPages;
+        saveSession(currentSession);
     }
     
     processQueue();
@@ -321,13 +548,17 @@ function setupEventListeners() {
     crawlForm.addEventListener('submit', (e) => {
         e.preventDefault();
         const url = urlInput.value.trim();
-        if (!url || isLoading) return;
+        const maxPages = parseInt(maxPagesInput.value, 10);
+        if (!url || isLoading || !maxPages || maxPages < 1) {
+            errorMessage.textContent = 'Bitte geben Sie eine gültige URL und eine maximale Seitenanzahl an.';
+            return;
+        }
+        errorMessage.textContent = '';
 
         const session = loadSession(url);
-        if (session && session.queue.length > 0) {
+        if (session && session.queue.length > 0 && session.pagesCrawled < session.maxPages) {
             resumeModal.hidden = false;
         } else {
-            const maxPages = parseInt(maxPagesInput.value, 10);
             startCrawl(url, maxPages, true);
         }
     });
@@ -358,6 +589,9 @@ function setupEventListeners() {
             }
         }
     });
+
+    loadSitemapBtn.addEventListener('click', handleLoadSitemap);
+    startSitemapCrawlBtn.addEventListener('click', handleStartSitemapCrawl);
 }
 
 // --- INITIALIZATION ---
